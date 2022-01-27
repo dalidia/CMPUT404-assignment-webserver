@@ -1,8 +1,8 @@
 #  coding: utf-8 
 import socketserver
-import re
 # Copyright 2013 Abram Hindle, Eddie Antonio Santos
-# 
+# Copyright 2022 Lidia Ataupillco-Ramos
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -26,13 +26,17 @@ import re
 
 # try: curl -v -X GET http://127.0.0.1:8080/
 
+# declare constant variables
 PROTOCOL = 'HTTP/1.1'
 OK_STATUS_CODE = '200 OK'
 N_ALLOW_METH = '405 Method Not Allowed'
-HTML_FILE_NAME = '/index.html'
+HTML_FILE_NAME = 'index.html'
 REDIR_STATUS_CODE = '301 Moved Permanently'
 NFOUND_STATUS_CODE = '404 Not Found'
+HTML_MIME_TYPE = 'text/html'
+CSS_MIME_TYPE = 'text/css'
 
+# construct the header string from a dictionary
 def construct_header_str(headers):
     header_str = ''
     for header in headers:
@@ -41,23 +45,48 @@ def construct_header_str(headers):
     header_str += '\r\n'
     return header_str.encode('utf-8')
 
+# obtains the binary object of the file requested using the uri
+def get_bbody(uri):
+    file_path = ''
+    if uri.endswith('/') or uri.endswith('/index.html'):
+        # locate path for the html file
+        file_path = f'{uri}' if uri.endswith('/index.html') else f'{uri}{HTML_FILE_NAME}'
+    elif uri.endswith('.css'):
+        file_path = f'{uri}'
+    else:
+        # Location issues
+        return f'<html>File moved</html>'.encode('utf-8')
+
+    # read corresponding file
+    try:
+        file_obj = open(f"www{file_path}", 'r')
+    except:
+        # raises an error so that the caller function handles the 404 error
+        raise FileNotFoundError
+    
+    # encode file into binary
+    bbody = file_obj.read().encode('utf-8')
+    return bbody
+
 class MyWebServer(socketserver.BaseRequestHandler):
     def handle_requests(self, request_info):
-        # obtain request headers
+        # obtain main information not part of the body
         main = request_info[0].split()
 
         # obtain method
         method = main[0]
         uri = main[1]
-        status = main[2]
+        raw_req_headers = main[2]
 
-        parsed_info = {}
-        for val in request_info[1:]:
-            t = val.split(": ")
-            parsed_info[t[0]] = t[1]
+        req_headers = {}
+        # are we using request headers?
+        # for val in raw_req_headers[1:]:
+        #     t = val.split(": ")
+        #     parsed_info[t[0]] = t[1]
 
-        return method, uri, parsed_info
+        return method, uri, req_headers
     
+    # method that sends the response to the client
     def send_response(self, request, bbody, status, headers):
         # send request line
         request_line = f'{PROTOCOL} {status}\r\n'.encode('utf-8')
@@ -76,27 +105,20 @@ class MyWebServer(socketserver.BaseRequestHandler):
         request_info = self.data.decode().split("\r\n")
 
         print ("Got a request of: %s\n" % self.data)
-        method, uri, parsed_info = self.handle_requests(request_info)
+        method, uri, req_headers = self.handle_requests(request_info)
+
+        # initialize the encoded body
+        bbody = b''
+        # any header types that are not content-type, content-length or connection
+        extra_headers = {}
 
         if method == 'GET':
-            if uri == '/base.css':
-                # read css file
-                css_obj = open(f"www{uri}", 'r')
-                bbody = css_obj.read().encode('utf-8')
-
-                # generate headers
-                headers = {
-                    'Content-Type': 'text/css; charset=utf-8',
-                    'Content-Length': f'{len(bbody)}',
-                    'connection': 'close'
-                }
-                self.send_response(self.request, bbody, OK_STATUS_CODE, headers)
-            # check if we need to consider /index.html/
-            elif uri == '/' or uri == '/index.html':
-                # read html file
-                file_obj = open(f"www{HTML_FILE_NAME}", 'r')
-                bbody = file_obj.read().encode('utf-8')
-
+            try:
+                bbody = get_bbody(uri)
+            except FileNotFoundError:
+                # send 404 error to the client: no found message
+                bbody = f'{uri.capitalize()} path not found.'.encode('utf-8')
+                
                 # generate headers
                 headers = {
                     'Content-Type': 'text/html; charset=utf-8',
@@ -104,84 +126,47 @@ class MyWebServer(socketserver.BaseRequestHandler):
                     'connection': 'close'
                 }
 
-                self.send_response(self.request, bbody, OK_STATUS_CODE, headers)                
-            elif uri == '/deep/deep.css':
-                # read css file
-                css_obj = open(f"www{uri}", 'r')
-                bbody = css_obj.read().encode('utf-8')
-
-                # generate headers
-                headers = {
-                    'Content-Type': 'text/css; charset=utf-8',
-                    'Content-Length': f'{len(bbody)}',
-                    'connection': 'close'
-                }
-
                 # send message
-                self.send_response(self.request, bbody, OK_STATUS_CODE, headers)                
-            elif re.match(r"^/deep/?$", uri) is not None or re.match(r'^/deep/index.html/?$', uri) is not None:
-                if uri.endswith('/'):
-                    # read html file
-                    file_obj = open(f"www/deep/{HTML_FILE_NAME}", 'r')
-                    bbody = file_obj.read().encode('utf-8')
+                self.send_response(self.request, bbody, NFOUND_STATUS_CODE, headers)
+                self.finish()
+                return 
 
-                    headers = {
-                        'Content-Type': 'text/html; charset=utf-8',
-                        'Content-Length': f'{len(bbody)}',
-                        'Connection': 'close'
-                    }
-                    
-                    self.send_response(self.request, bbody, OK_STATUS_CODE, headers)
-                else:
-                    # redirect
-                    new_address = 'http://127.0.0.1:8080/deep/'
+            if uri.endswith('.css'):
+                content_type = CSS_MIME_TYPE
+                status = OK_STATUS_CODE
 
-                    bbody = f'File moved'.encode('utf-8')
-
-                    headers = {
-                        'Content-Type': 'text/plain; charset=utf-8',
-                        'Content-Length': f'{len(bbody)}',
-                        'Connection': 'keep-alive',
-                        'Location': f'{new_address}'
-                    }
-
-                    # send message
-                    self.send_response(self.request, bbody, REDIR_STATUS_CODE, headers)
+            elif uri.endswith('/') or uri.endswith('/index.html'):
+                content_type = HTML_MIME_TYPE
+                status = OK_STATUS_CODE               
             else:
-                nfound_message = f'{uri.capitalize()} path not found.'.encode('utf-8')
-                
-                # generate headers
-                headers = {
-                    'Content-Type': 'text/plain; charset=utf-8',
-                    'Content-Length': f'{len(nfound_message)}',
-                    'connection': 'keep-alive'
-                }
+                # redirect
+                content_type = HTML_MIME_TYPE
+                status = REDIR_STATUS_CODE
+                new_address = f'http://127.0.0.1:8080{uri}/'
 
-                # send message
-                self.send_response(self.request, nfound_message, NFOUND_STATUS_CODE, headers)
+                extra_headers = {
+                    'Location': f'{new_address}'
+                }
         else:
             # Response for method not handled
             # create message
-            nallow_message = f'Method {method} not allowed. You can only make GET requests.\n'.encode('utf-8')
-            
-            # generate headers
-            headers = {
-                'Content-Type': 'text/html; charset=utf-8',
-                'Content-Length': f'{len(nallow_message)}',
-                'connection': 'close'
-            }
+            bbody = f'<html>Method {method} not allowed. You can only make GET requests.</html>\n'.encode('utf-8')
+            content_type = HTML_MIME_TYPE
+            status = N_ALLOW_METH
 
-            # send message
-            self.send_response(self.request, nallow_message, N_ALLOW_METH, headers)                
+        # generate headers
+        headers = {
+            'Content-Type': f'{content_type}',
+            'Content-Length': f'{len(bbody)}',
+            'connection': 'close'
+        }
 
-            
+        # add the extra headers
+        headers.update(extra_headers)
 
-        ##### USE SENDFILE
-
+        # send message
+        self.send_response(self.request, bbody, status, headers)
         self.finish()
-    
-    def decode(self, data):
-        return data.decode()
 
 
 if __name__ == "__main__":
